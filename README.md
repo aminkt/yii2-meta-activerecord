@@ -30,11 +30,17 @@ Once the extension is installed, simply use it in your code as follows  :
 ```php
 <?php
 
-use mipotech\metaActiveRecord\MetaActiveRecord;
+use aminkt\metaActiveRecord\MetaActiveRecord;
 
 class User extends MetaActiveRecord
 {
-	...
+	public function metaAttributes()
+	{
+	    return [
+	        'field1',
+	        'field2'
+        ];
+	}
 }
 ```
 
