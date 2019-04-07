@@ -7,7 +7,9 @@
 namespace aminkt\metaActiveRecord;
 
 use Yii;
+use yii\base\InvalidArgumentException;
 use yii\db\ActiveRecord;
+use yii\db\Exception;
 use yii\db\Query;
 use yii\db\Schema;
 
@@ -30,12 +32,17 @@ abstract class MetaActiveRecord extends ActiveRecord
     /** @var boolean $autoSaveMetaFields Whether meta data should be loaded */
     protected $autoSaveMetaFields = false;
 
+    /** @var boolean $autoDeleteMetaFields Whether meta data should be delete */
+    protected $autoDeleteMetaFields = false;
+
     /** @var mixed $metaData Array of the this record's meta data */
-    protected $metaData = null;
+    protected $metaData = [];
+
+    /** @var array $oldMetaData Old value of meta data. */
+    protected $oldMetaData = [];
 
     /** @var array $metaDataUpdateQueue Queue of meta data key-value pairs to update */
     protected $metaDataUpdateQueue = array();
-
 
     /**
      * Override __get of yii\db\ActiveRecord
@@ -62,25 +69,192 @@ abstract class MetaActiveRecord extends ActiveRecord
     public function __set($name, $value)
     {
         if (in_array($name, $this->metaAttributes())) {
-            if ($this->autoSaveMetaFields && !$this->isNewRecord)
-                $this->setMetaAttribute($name, $value);
-            else
-                $this->enqueueMetaUpdate($name, $value);
+            $this->setMetaAttribute($name, $value);
         } else {
             parent::__set($name, $value);
         }
     }
 
+    /**
+     * Set new value to metadata.
+     *
+     * @param $name
+     * @param $value
+     *
+     * @return void
+     *
+     * @author Amin Keshavarz <ak_1596@yahoo.com>
+     */
+    public function setMetaAttribute($name, $value)
+    {
+        $this->metaData[$name] = $value;
+        if ($this->autoSaveMetaFields && !$this->isNewRecord) {
+            $this->enqueueMetaUpdate($name, $value);
+        }
+    }
+
+    /**
+     * Return metadata by name.
+     *
+     * @param $name
+     *
+     * @return mixed|null
+     *
+     * @author Amin Keshavarz <ak_1596@yahoo.com>
+     */
+    public function getMetaAttribute($name)
+    {
+        if (!in_array($name, static::metaAttributes())) {
+            throw new InvalidArgumentException("Attribute name is invalid.");
+        }
+
+        if (empty($this->metaData)) {
+            $this->loadMetaData();
+        }
+
+        if (!key_exists($name, $this->metaData)) {
+            return null;
+        }
+
+        return $this->metaData[$name];
+    }
+
     abstract function metaAttributes();
 
     /**
-     * Return the value of the named meta attribute
+     * Enqueue a meta key-value pair to be saved when the record is saved
+     *
+     * @param string $name  the property name or the event name
+     * @param mixed  $value the property value
+     */
+    protected function enqueueMetaUpdate($name, $value)
+    {
+        if (!is_array($this->metaDataUpdateQueue))
+            $this->metaDataUpdateQueue = array();
+
+        $this->metaDataUpdateQueue[$name] = $value;
+    }
+
+    public function attributes()
+    {
+        return array_merge(parent::attributes(), static::metaAttributes());
+    }
+
+    /**
+     * Catch the afterFind event to load the meta data if the
+     * $autoLoadMetaData flag is set to true
+     *
+     */
+    public function afterFind()
+    {
+        if ($this->autoLoadMetaData)
+            $this->loadMetaData();
+
+        parent::afterFind();
+    }
+
+    /**
+     * Load the meta data for this record
+     *
+     * @return void
+     */
+    protected function loadMetaData()
+    {
+        $rows = (new Query)
+            ->select('*')
+            ->from($this->metaTableName())
+            ->where([
+                'record_id' => $this->{$this->getPkName()}
+            ])
+            ->all();
+
+        $this->metaData = $rows;
+        $this->oldMetaData = $rows;
+    }
+
+    public function save($runValidation = true, $attributeNames = null)
+    {
+        if ($this->autoSaveMetaFields && !$this->isNewRecord) {
+            return parent::save($runValidation, $attributeNames);
+        }
+
+        $transaction = Yii::$app->getDb()->beginTransaction();
+        try {
+            $save = parent::save($runValidation, $attributeNames);
+            if ($save) {
+                foreach ($this->metaData as $key => $value) {
+                    if (!$this->saveMetaAttribute($key, $value)) {
+                        throw new Exception("Can't save meta data.");
+                    }
+                }
+            } else {
+                throw new Exception("Can't save parent model.");
+            }
+            $transaction->commit();
+            return $save;
+        } catch (Exception $exception) {
+            $this->deleteMetaData();
+            $transaction->rollBack();
+        }
+        return false;
+    }
+
+    public function afterDelete()
+    {
+        parent::afterDelete();
+        if ($this->autoDeleteMetaFields) {
+            $this->deleteMetaData();
+        }
+    }
+
+    public function deleteMetaData($name = null)
+    {
+        $command = static::getDb()
+            ->createCommand();
+
+        if ($name === null) {
+            $command
+                ->delete($this->metaTableName(), [
+                'record_id' => $this->{$this->getPkName()}
+            ]);
+        } else {
+            $command
+                ->delete($this->metaTableName(), [
+                    'record_id' => $this->{$this->getPkName()},
+                    'meta_key' => $name
+                ]);
+        }
+
+        $command->execute();
+    }
+
+    /**
+     * Catch the afterSave event to save all of the queued meta data
+     *
+     */
+    public function afterSave($insert, $changedAttributes)
+    {
+        $queue = $this->metaDataUpdateQueue;
+
+        if (is_array($queue) && count($queue)) {
+            foreach ($queue as $name => $value)
+                $this->saveMetaAttribute($name, $value);
+
+            $this->metaDataUpdateQueue = array();
+        }
+
+        parent::afterSave($insert, $changedAttributes);
+    }
+
+    /**
+     * Load the value of the named meta attribute
      *
      * @param string $name Property name
      *
      * @return mixed Property value
+     * @throws \yii\db\Exception
      */
-    protected function getMetaAttribute($name)
+    public function loadMetaAttribute($name)
     {
         if (!$this->assertMetaTable())
             return null;
@@ -107,6 +281,7 @@ abstract class MetaActiveRecord extends ActiveRecord
      * @param boolean $autoCreate Create the table if it does not exist
      *
      * @return boolean If table exists
+     * @throws \yii\db\Exception
      */
     protected function assertMetaTable($autoCreate = false)
     {
@@ -163,7 +338,12 @@ abstract class MetaActiveRecord extends ActiveRecord
     }
 
     /**
+     * Create table if not exist.
      *
+     * @return int
+     *
+     * @author Amin Keshavarz <ak_1596@yahoo.com>
+     * @throws \yii\db\Exception
      */
     protected function createMetaTable()
     {
@@ -199,12 +379,15 @@ abstract class MetaActiveRecord extends ActiveRecord
     }
 
     /**
-     * Set the value of the named meta attribute
+     * save the value of the named meta attribute
      *
      * @param string $name  the property name or the event name
      * @param mixed  $value the property value
+     *
+     * @return int
+     * @throws \yii\db\Exception
      */
-    protected function setMetaAttribute($name, $value)
+    protected function saveMetaAttribute($name, $value)
     {
         // Assert that the meta table exists,
         // and create it if it does not
@@ -216,8 +399,7 @@ abstract class MetaActiveRecord extends ActiveRecord
         $pk = $this->getPkName();
 
         // Check if we need to create a new record or update an existing record
-        $currentVal = $this->getMetaAttribute($name);
-        if (is_null($currentVal)) {
+        if (empty($this->oldMetaData[$name])) {
             $ret = $db
                 ->createCommand()
                 ->insert($tbl, [
@@ -240,68 +422,5 @@ abstract class MetaActiveRecord extends ActiveRecord
             $this->metaData[$name] = $value;
 
         return $ret;
-    }
-
-    /**
-     * Enqueue a meta key-value pair to be saved when the record is saved
-     *
-     * @param string $name  the property name or the event name
-     * @param mixed  $value the property value
-     */
-    protected function enqueueMetaUpdate($name, $value)
-    {
-        if (!is_array($this->metaDataUpdateQueue))
-            $this->metaDataUpdateQueue = array();
-
-        $this->metaDataUpdateQueue[$name] = $value;
-    }
-
-    /**
-     * Catch the afterFind event to load the meta data if the
-     * $autoLoadMetaData flag is set to true
-     *
-     */
-    public function afterFind()
-    {
-        if ($this->autoLoadMetaData)
-            $this->loadMetaData();
-
-        parent::afterFind();
-    }
-
-    /**
-     * Load the meta data for this record
-     *
-     * @return void
-     */
-    protected function loadMetaData()
-    {
-        $rows = (new Query)
-            ->select('*')
-            ->from($this->metaTableName())
-            ->where([
-                'record_id' => $this->{$this->getPkName()}
-            ])
-            ->all();
-
-        $this->metaData = $rows;
-    }
-
-    /**
-     * Catch the afterSave event to save all of the queued meta data
-     *
-     */
-    public function afterSave($insert, $changedAttributes)
-    {
-        $queue = $this->metaDataUpdateQueue;
-
-        if (is_array($queue) && count($queue)) {
-            foreach ($queue as $name => $value)
-                $this->setMetaAttribute($name, $value);
-
-            $this->metaDataUpdateQueue = array();
-        }
-
-        parent::afterSave($insert, $changedAttributes);
     }
 }
