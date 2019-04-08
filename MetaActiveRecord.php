@@ -183,6 +183,10 @@ abstract class MetaActiveRecord extends ActiveRecord
             $save = parent::save($runValidation, $attributeNames);
             if ($save) {
                 foreach ($this->metaData as $key => $value) {
+//                    if (!is_array($value)) {
+//                        $value = [$value];
+//                    }
+
                     if (!$this->saveMetaAttribute($key, $value)) {
                         throw new Exception("Can't save meta data.");
                     }
@@ -195,6 +199,7 @@ abstract class MetaActiveRecord extends ActiveRecord
         } catch (Exception $exception) {
             $this->deleteMetaData();
             $transaction->rollBack();
+            Yii::error($exception);
         }
         return false;
     }
@@ -207,8 +212,21 @@ abstract class MetaActiveRecord extends ActiveRecord
         }
     }
 
+    /**
+     * Delete meta data.
+     *
+     * @param string|null $name Name of meta key.
+     *
+     * @return void
+     *
+     * @author Amin Keshavarz <ak_1596@yahoo.com>
+     * @throws \yii\db\Exception
+     */
     public function deleteMetaData($name = null)
     {
+        if ($this->assertMetaTable()) {
+            return;
+        }
         $command = static::getDb()
             ->createCommand();
 
@@ -285,17 +303,20 @@ abstract class MetaActiveRecord extends ActiveRecord
      */
     protected function assertMetaTable($autoCreate = false)
     {
-        $row = (new Query)
-            ->select('*')
-            ->from('information_schema.tables')
-            ->where([
-                'table_schema' => $this->getDbName(),
-                'table_name' => $this->metaTableName()
-            ])
-            ->limit(1)
-            ->all();
+//        $row = (new Query)
+//            ->select('*')
+//            ->from('information_schema.tables')
+//            ->where([
+//                'table_schema' => $this->getDbName(),
+//                'table_name' => $this->metaTableName()
+//            ])
+//            ->limit(1)
+//            ->all();
 
-        if (null === $row) {
+        $tableSchema = static::getDb()->schema->getTableSchema($this->metaTableName());
+
+
+        if ($tableSchema === null) {
             if ($autoCreate) {
                 $this->createMetaTable();
                 return true;
@@ -356,7 +377,7 @@ abstract class MetaActiveRecord extends ActiveRecord
                 'id' => Schema::TYPE_BIGPK,
                 'record_id' => Schema::TYPE_BIGINT . ' NOT NULL default \'0\'',
                 'meta_key' => Schema::TYPE_STRING . ' default NULL',
-                'meta_value' => 'longtext',
+                'meta_value' => Schema::TYPE_JSON,
             ], 'ENGINE=MyISAM  DEFAULT CHARSET=utf8')
             ->execute();
 
