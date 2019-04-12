@@ -168,8 +168,14 @@ abstract class MetaActiveRecord extends ActiveRecord
             ])
             ->all();
 
-        $this->metaData = $rows;
-        $this->oldMetaData = $rows;
+        foreach ($rows as $row) {
+            $value = $row['meta_value'];
+            if ($value and !is_array($value) and !is_numeric($value)) {
+                $value = json_decode($value);
+            }
+            $this->metaData[$row['meta_key']] = $value;
+        }
+        $this->oldMetaData = $this->metaData;
     }
 
     public function save($runValidation = true, $attributeNames = null)
@@ -426,14 +432,14 @@ abstract class MetaActiveRecord extends ActiveRecord
                 ->insert($tbl, [
                     'record_id' => $this->{$pk},
                     'meta_key' => $name,
-                    'meta_value' => is_scalar($value) ? $value : serialize($value)
+                    'meta_value' => $value
                 ])
                 ->execute();
         } else {
             $ret = $db
                 ->createCommand()
                 ->update($tbl, [
-                    'meta_value' => is_scalar($value) ? $value : serialize($value)
+                    'meta_value' => $value
                 ], "record_id = '{$this->$pk}' AND meta_key = '{$name}'")
                 ->execute();
         }
