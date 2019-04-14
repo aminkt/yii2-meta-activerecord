@@ -435,6 +435,8 @@ abstract class MetaActiveRecord extends ActiveRecord
                     'meta_value' => $value
                 ])
                 ->execute();
+        } elseif ($this->oldMetaData[$name] == $value) {
+            return 1;
         } else {
             $ret = $db
                 ->createCommand()
